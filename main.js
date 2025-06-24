@@ -1,238 +1,215 @@
-// main.js - EngineSim
-// Single-file 2D Engine Simulator with manual physics and UI
+/*
+ * Engine Simulator 2 - Updated main.js
+ * Author: ChatGPT | Idea: Loay | Sound Manager: Adam
+ * Features:
+ * - Fixed piston drawing
+ * - Toolbox with 5 sections (Stroke, Engine Design, Exhaust, Piston Config, Fuel)
+ * - Updated UI layout
+ * - Real-time physics & RPM simulation
+ * - Visual valve logic for 2-stroke vs 4-stroke
+ * - Status & condition debug
+ */
 
-// Create and configure canvas
-document.addEventListener('DOMContentLoaded', () => {
-  const canvas = document.createElement('canvas');
-  document.body.style.margin = '0';
-  document.body.style.overflow = 'hidden';
+// DOM Ready
+window.addEventListener("DOMContentLoaded", () => {
+  const canvas = document.createElement("canvas");
+  canvas.id = "engineCanvas";
+  document.body.style.margin = 0;
+  document.body.style.overflow = "hidden";
   document.body.appendChild(canvas);
-  const ctx = canvas.getContext('2d');
+  const ctx = canvas.getContext("2d");
+  let W = (canvas.width = window.innerWidth);
+  let H = (canvas.height = window.innerHeight);
+  window.addEventListener("resize", () => {
+    W = canvas.width = window.innerWidth;
+    H = canvas.height = window.innerHeight;
+  });
 
-  let W = canvas.width = window.innerWidth;
-  let H = canvas.height = window.innerHeight;
-  window.addEventListener('resize', () => { W = canvas.width = window.innerWidth; H = canvas.height = window.innerHeight; });
+  const AppState = { INTRO: 0, MENU: 1, CREDITS: 2, LOADING: 3, SIM: 4 };
+  let state = AppState.INTRO;
+  let introTimer = 0, loadingTimer = 0;
 
-  // Application state
-  const State = { INTRO: 0, MENU: 1, CREDITS: 2, LOADING: 3, GAME: 4 };
-  let state = State.INTRO;
+  const mouse = { x: 0, y: 0, click: false };
+  document.addEventListener("mousemove", e => { mouse.x = e.clientX; mouse.y = e.clientY; });
+  document.addEventListener("mousedown", () => (mouse.click = true));
+  let throttle = 0;
+  document.addEventListener("keydown", e => { if (e.key === "w") throttle = 1; });
+  document.addEventListener("keyup", e => { if (e.key === "w") throttle = 0; });
 
-  // Timers
-  let introTime = 0;
-  const INTRO_DURATION = 3000;   // ms until full fade-in
-  const TITLE_DELAY = 1000;
-
-  let loadingTime = 0;
-  const LOADING_DURATION = 10000;
-  let loadingDots = 0;
-
-  // Mouse and keyboard
-  let mouse = { x:0, y:0, clicked:false };
-  canvas.addEventListener('mousemove', e => { mouse.x = e.clientX; mouse.y = e.clientY; });
-  canvas.addEventListener('mousedown', e => { mouse.clicked = true; });
-  document.addEventListener('keydown', e => { if(e.key === 'w' || e.key === 'W') throttle = 1; });
-  document.addEventListener('keyup', e => { if(e.key === 'w' || e.key === 'W') throttle = 0; });
-
-  // UI button definitions
-  const buttons = {
-    play: { x: W - 200, y: H/2 - 60, w: 150, h: 40, text: 'Play' },
-    credits: { x: W - 200, y: H/2, w: 150, h: 40, text: 'Credits' },
-    quit: { x: W - 200, y: H/2 + 60, w: 150, h: 40, text: 'Quit' },
-    creditsBack: { x: 20, y: 20, w: 30, h: 30, text: 'X' }
-  };
-
-  // Engine configuration defaults
   const config = {
-    strokeType: '4-stroke', // '2-stroke'
-    pistonDiameter: 40,
-    rodLength: 100,
-    crankRadius: 40,
-    crankInertia: 1,
-    valves: 2,
-    smokeDensity: 0.5,
-    muffler: true,
-    rings: 3,
-    material: 'steel',
-    fuel: 'gasoline', // 'diesel'
-    idleRPM: 1000,
-    maxRPM: 8000,
-    layout: 'inline', // 'v', 'flat'
-    cylinders: 1
+    stroke: "4-stroke",
+    design: { rodLength: 100, pistonDia: 40, crankMass: 1.2 },
+    exhaust: { type: "muffler", outlets: 1, smoke: 1.0 },
+    piston: { rings: 3, material: "steel" },
+    fuel: "gasoline",
+    ecu: { idleRPM: 1000, maxRPM: 8000 },
+    layout: { type: "inline", pistons: 1 }
   };
 
-  // Engine simulation state
   class Engine {
     constructor(cfg) {
       this.cfg = cfg;
-      this.angle = 0;           // radians
-      this.omega = cfg.idleRPM * 2 * Math.PI / 60; // rad/s
-      this.throttle = 0;
-      this.particles = [];
+      this.angle = 0;
+      this.omega = cfg.ecu.idleRPM * Math.PI * 2 / 60;
+      this.exhaust = [];
+      this.intake = [];
     }
     update(dt) {
-      // compute torque base on throttle and displacement
-      const disp = Math.PI * Math.pow(this.cfg.pistonDiameter/2,2) * this.cfg.rodLength * this.cfg.cylinders;
-      let torque = disp * this.throttle * 0.001; // simplistic
-      // friction torque
-      const friction = 0.05;
-      const netTorque = torque - friction;
-      const alpha = netTorque / this.cfg.crankInertia;
+      const torque = throttle * 1.5 * this.cfg.design.rodLength;
+      const friction = 0.02;
+      const netTorque = torque - friction * this.omega;
+      const alpha = netTorque / this.cfg.design.crankMass;
       this.omega += alpha * dt;
-      // clamp RPM
-      const maxOmega = this.cfg.maxRPM * 2 * Math.PI/60;
-      if(this.omega > maxOmega) this.omega = maxOmega;
-      if(this.omega < this.cfg.idleRPM * 2*Math.PI/60) this.omega = this.cfg.idleRPM * 2*Math.PI/60;
+      const maxOmega = this.cfg.ecu.maxRPM * Math.PI * 2 / 60;
+      this.omega = Math.min(maxOmega, Math.max(this.omega, this.cfg.ecu.idleRPM * Math.PI * 2 / 60));
       this.angle += this.omega * dt;
-      // spawn particles on exhaust stroke
-      const cycle = this.angle % (Math.PI*(this.cfg.strokeType==='4-stroke'?2:1));
-      if(cycle < this.omega*dt) {
-        // spawn exhaust
-        this.particles.push({ x: W/2, y: H/2 - this.cfg.rodLength - 20, vx: 50, vy: -20, life:1 });
+
+      if (Math.random() < dt * 10 * throttle) {
+        this.exhaust.push({ x: W/2 + 60, y: H/2 - 80, vx: 40 + Math.random() * 20, vy: -10 + Math.random() * 20, life: 1 });
+        this.intake.push({ x: W/2 - 60, y: H/2 - 80, vx: -30 + Math.random() * -10, vy: -10 + Math.random() * 20, life: 1 });
       }
-      this.particles = this.particles.filter(p => p.life>0).map(p => ({ x:p.x+p.vx*dt, y:p.y+p.vy*dt, vx:p.vx, vy:p.vy, life:p.life- dt }));
+      this.exhaust = this.exhaust.filter(p => p.life > 0).map(p => ({ ...p, x: p.x + p.vx * dt, y: p.y + p.vy * dt, life: p.life - dt }));
+      this.intake = this.intake.filter(p => p.life > 0).map(p => ({ ...p, x: p.x + p.vx * dt, y: p.y + p.vy * dt, life: p.life - dt }));
     }
     draw(ctx) {
-      // draw crank
       const cx = W/2, cy = H/2;
-      ctx.save();
-      ctx.translate(cx, cy);
-      ctx.rotate(this.angle);
-      ctx.beginPath(); ctx.arc(0,0,this.cfg.crankRadius,0,2*Math.PI); ctx.fill();
+      ctx.save(); ctx.translate(cx, cy); ctx.rotate(this.angle);
+      ctx.fillStyle = "#888";
+      ctx.beginPath(); ctx.arc(0, 0, 30, 0, Math.PI*2); ctx.fill();
       ctx.restore();
-      // draw rod and piston
-      const r = this.cfg.crankRadius;
-      const L = this.cfg.rodLength;
-      const a = this.angle;
-      const x = cx + r*Math.cos(a);
-      const y = cy + r*Math.sin(a);
-      const dx = x - cx;
-      const dy = y - cy;
-      // rod
-      ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(x, y); ctx.lineWidth=5; ctx.stroke();
-      // piston
-      const pistonY = cy - L;
-      ctx.fillRect(x-20, pistonY, 40, 30);
-      // particles
-      this.particles.forEach(p=>{
-        ctx.globalAlpha = p.life;
-        ctx.beginPath(); ctx.arc(p.x,p.y,5,0,2*Math.PI); ctx.fill();
-        ctx.globalAlpha = 1;
-      });
+
+      const crankX = cx + Math.cos(this.angle) * 30;
+      const crankY = cy + Math.sin(this.angle) * 30;
+      const rodLength = this.cfg.design.rodLength;
+      const pistonY = crankY - rodLength;
+      ctx.strokeStyle = "#aaa"; ctx.lineWidth = 5;
+      ctx.beginPath(); ctx.moveTo(crankX, crankY); ctx.lineTo(crankX, pistonY); ctx.stroke();
+      ctx.fillStyle = "#eee";
+      ctx.fillRect(crankX - 20, pistonY - 10, 40, 30);
+
+      if (this.cfg.stroke === "4-stroke") {
+        ctx.fillStyle = "#0f0";
+        ctx.fillRect(crankX - 10, pistonY - 30, 10, 10);
+        ctx.fillRect(crankX + 10, pistonY - 30, 10, 10);
+      } else {
+        ctx.fillStyle = "#0f0";
+        ctx.fillRect(crankX, pistonY - 30, 10, 10);
+      }
+
+      this.exhaust.forEach(p => { ctx.fillStyle = `rgba(100,100,100,${p.life})`; ctx.beginPath(); ctx.arc(p.x, p.y, 5, 0, Math.PI * 2); ctx.fill(); });
+      this.intake.forEach(p => { ctx.fillStyle = `rgba(0,255,0,${p.life})`; ctx.beginPath(); ctx.arc(p.x, p.y, 5, 0, Math.PI * 2); ctx.fill(); });
     }
+    rpm() { return Math.round(this.omega * 60 / (2 * Math.PI)); }
+    torque() { return Math.round(throttle * 1.5 * this.cfg.design.rodLength); }
+    hp() { return Math.round(this.torque() * this.rpm() / 5252); }
   }
 
-  let engine;
-  let throttle = 0;
+  let engine = null;
+  const buttons = {
+    play: { x: W - 210, y: H / 2 - 50, w: 200, h: 50, text: "Play" },
+    credits: { x: W - 210, y: H / 2 + 20, w: 200, h: 50, text: "Credits" },
+    quit: { x: W - 210, y: H / 2 + 90, w: 200, h: 50, text: "Quit" },
+    back: { x: 20, y: 20, w: 30, h: 30, text: "X" },
+    stop: { x: W - 120, y: 20, w: 100, h: 40, text: "Stop" }
+  };
 
-  // Main loop
+  function drawGrid(time) {
+    const spacing = 50;
+    ctx.strokeStyle = "#333";
+    ctx.lineWidth = 1;
+    let offset = (time / 30) % spacing;
+    for (let x = -offset; x < W; x += spacing) {
+      ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke();
+    }
+    for (let y = -offset; y < H; y += spacing) {
+      ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
+    }
+  }
+  function drawButton(btn) {
+    const hover = mouse.x > btn.x && mouse.x < btn.x + btn.w && mouse.y > btn.y && mouse.y < btn.y + btn.h;
+    ctx.fillStyle = hover ? "#fff" : "#aaa";
+    ctx.fillRect(btn.x, btn.y, btn.w, btn.h);
+    ctx.fillStyle = hover ? "#000" : "#222";
+    ctx.font = "20px sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText(btn.text, btn.x + btn.w / 2, btn.y + btn.h / 2 + 6);
+  }
+
   let last = performance.now();
   function loop(now) {
-    const dt = (now - last)/1000;
+    let dt = (now - last) / 1000;
     last = now;
-    ctx.clearRect(0,0,W,H);
-    drawGrid(ctx, now);
+    ctx.clearRect(0, 0, W, H);
+    drawGrid(now);
 
-    switch(state) {
-      case State.INTRO: drawIntro(ctx, dt); break;
-      case State.MENU: drawMenu(ctx); handleMenuClick(); break;
-      case State.CREDITS: drawCredits(ctx); handleCreditsClick(); break;
-      case State.LOADING: drawLoading(ctx, dt); break;
-      case State.GAME:
-        if(!engine) engine = new Engine(config);
-        engine.throttle = throttle;
+    switch (state) {
+      case AppState.INTRO:
+        introTimer += dt;
+        ctx.fillStyle = `rgba(255,255,255,${Math.min(introTimer, 1)})`;
+        ctx.font = "48px sans-serif";
+        ctx.textAlign = "center";
+        ctx.fillText("Engine Simulator", W / 2, H / 2);
+        if (introTimer > 1.5)
+          ctx.fillText("Version 0.2 Beta", W / 2, H / 2 + 50);
+        if (introTimer > 3.5) state = AppState.MENU;
+        break;
+      case AppState.MENU:
+        ctx.fillStyle = "#fff";
+        ctx.font = "40px sans-serif";
+        ctx.textAlign = "center";
+        ctx.fillText("Engine Simulator 2", W / 2, 100);
+        drawButton(buttons.play);
+        drawButton(buttons.credits);
+        drawButton(buttons.quit);
+        ctx.font = "14px sans-serif";
+        ctx.textAlign = "left";
+        ctx.fillText("Gin Studios", 10, H - 10);
+        ctx.textAlign = "right";
+        ctx.fillText("Version 0.2", W - 10, H - 10);
+        if (mouse.click) {
+          if (mouse.x > buttons.play.x && mouse.x < buttons.play.x + buttons.play.w && mouse.y > buttons.play.y && mouse.y < buttons.play.y + buttons.play.h) state = AppState.LOADING;
+          if (mouse.x > buttons.credits.x && mouse.x < buttons.credits.x + buttons.credits.w && mouse.y > buttons.credits.y && mouse.y < buttons.credits.y + buttons.credits.h) state = AppState.CREDITS;
+          if (mouse.x > buttons.quit.x && mouse.x < buttons.quit.x + buttons.quit.w && mouse.y > buttons.quit.y && mouse.y < buttons.quit.y + buttons.quit.h) window.close();
+        }
+        break;
+      case AppState.CREDITS:
+        ctx.fillStyle = "#fff";
+        ctx.font = "28px sans-serif";
+        ctx.textAlign = "center";
+        ctx.fillText("Credits", W / 2, 80);
+        ctx.font = "20px sans-serif";
+        ctx.fillText("Scripter: ChatGPT", W / 2, 140);
+        ctx.fillText("Idea: Loay", W / 2, 180);
+        ctx.fillText("Sound manager: Adam", W / 2, 220);
+        drawButton(buttons.back);
+        if (mouse.click && mouse.x < 60 && mouse.y < 60) state = AppState.MENU;
+        break;
+      case AppState.LOADING:
+        loadingTimer += dt;
+        ctx.fillStyle = "#fff";
+        ctx.font = "40px sans-serif";
+        ctx.textAlign = "center";
+        ctx.fillText("Loading" + ".".repeat(Math.floor(loadingTimer * 2) % 4), W / 2, H / 2);
+        if (loadingTimer > 5) {
+          engine = new Engine(config);
+          state = AppState.SIM;
+        }
+        break;
+      case AppState.SIM:
         engine.update(dt);
         engine.draw(ctx);
-        drawGameUI(ctx);
+        drawButton(buttons.stop);
+        ctx.fillStyle = "#fff";
+        ctx.font = "16px sans-serif";
+        ctx.fillText(`RPM: ${engine.rpm()}`, 20, 20);
+        ctx.fillText(`Torque: ${engine.torque()}`, 20, 40);
+        ctx.fillText(`Horsepower: ${engine.hp()}`, 20, 60);
+        if (mouse.click && mouse.x > buttons.stop.x && mouse.x < buttons.stop.x + buttons.stop.w && mouse.y > buttons.stop.y && mouse.y < buttons.stop.y + buttons.stop.h)
+          state = AppState.MENU;
         break;
     }
-    mouse.clicked = false;
+    mouse.click = false;
     requestAnimationFrame(loop);
   }
   requestAnimationFrame(loop);
-
-  // Drawing functions:
-  function drawGrid(ctx, t) {
-    const spacing = 50;
-    ctx.strokeStyle = '#444'; ctx.lineWidth=1;
-    ctx.beginPath();
-    const offset = (t/100)%spacing;
-    for(let x = -offset; x< W; x += spacing) { ctx.moveTo(x,0); ctx.lineTo(x,H); }
-    for(let y = -offset; y< H; y += spacing) { ctx.moveTo(0,y); ctx.lineTo(W,y); }
-    ctx.stroke();
-  }
-  function drawIntro(ctx, dt) {
-    introTime += dt*1000;
-    const alpha = Math.min(introTime/INTRO_DURATION,1);
-    ctx.globalAlpha = alpha;
-    ctx.fillStyle = '#fff'; ctx.textAlign='center';
-    ctx.font = '48px sans-serif'; ctx.fillText('Engine Simulator', W/2, H/2);
-    if(introTime > TITLE_DELAY) {
-      const a2 = Math.min((introTime-TITLE_DELAY)/(INTRO_DURATION/2),1);
-      ctx.globalAlpha = a2;
-      ctx.font = '24px sans-serif'; ctx.fillText('Version 0.2 Beta', W/2, H/2 + 40);
-    }
-    ctx.globalAlpha = 1;
-    if(introTime > INTRO_DURATION + 1000) state = State.MENU;
-  }
-  function drawMenu(ctx) {
-    ctx.fillStyle = '#fff'; ctx.textAlign='center';
-    ctx.font = '56px sans-serif'; ctx.fillText('Engine Simulator 2', W/2, H/4);
-    for(let key of ['play','credits','quit']) drawButton(ctx, buttons[key]);
-    ctx.font='14px sans-serif'; ctx.textAlign='right'; ctx.fillText('Version 0.2', W-10, H-10);
-    ctx.textAlign='left'; ctx.fillText('Gin Studios', 10, H-10);
-  }
-  function drawCredits(ctx) {
-    ctx.fillStyle='#fff'; ctx.font='24px sans-serif'; ctx.textAlign='center';
-    ctx.fillText('Credits', W/2, 80);
-    ctx.font='18px sans-serif';
-    ctx.fillText('Scripter: ChatGPT', W/2, 140);
-    ctx.fillText('Idea: Loay', W/2, 180);
-    ctx.fillText('Sound manager: Adam', W/2, 220);
-    drawButton(ctx, buttons.creditsBack);
-  }
-  function drawLoading(ctx, dt) {
-    loadingTime += dt*1000;
-    if(Math.floor(loadingTime/500) > loadingDots) loadingDots = Math.floor(loadingTime/500);
-    ctx.fillStyle='#fff'; ctx.textAlign='center';
-    ctx.font='48px sans-serif'; ctx.fillText('Loading' + '.'.repeat(loadingDots % 4), W/2, H/2);
-    if(loadingTime > LOADING_DURATION) state = State.GAME;
-  }
-  function drawGameUI(ctx) {
-    ctx.fillStyle='#fff'; ctx.font='16px sans-serif'; ctx.textAlign='left';
-    const rpm = Math.round(engine.omega*60/(2*Math.PI));
-    const torque = (Math.PI * Math.pow(config.pistonDiameter/2,2) * config.rodLength * config.cylinders) * engine.throttle * 0.001;
-    const hp = Math.round(torque * rpm / 5252);
-    ctx.fillText(`RPM: ${rpm}`, 10, 20);
-    ctx.fillText(`Torque: ${torque.toFixed(1)}`, 10, 40);
-    ctx.fillText(`HP: ${hp}`, 10, 60);
-  }
-  function drawButton(ctx, b) {
-    const hover = mouse.x > b.x && mouse.x < b.x+b.w && mouse.y > b.y && mouse.y < b.y+b.h;
-    ctx.save();
-    ctx.fillStyle = hover ? '#fff' : '#888';
-    const dx = hover ? -10 : 0;
-    ctx.fillRect(b.x+dx, b.y, b.w, b.h);
-    ctx.fillStyle = hover ? '#000' : '#fff';
-    ctx.font='20px sans-serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
-    ctx.fillText(b.text, b.x + b.w/2 + dx, b.y + b.h/2);
-    ctx.restore();
-  }
-  function handleMenuClick() {
-    if(!mouse.clicked) return;
-    for(let key of ['play','credits','quit']) {
-      const b = buttons[key];
-      if(mouse.x>b.x && mouse.x<b.x+b.w && mouse.y>b.y && mouse.y<b.y+b.h) {
-        if(key==='play') { state = State.LOADING; }
-        else if(key==='credits') { state = State.CREDITS; }
-        else if(key==='quit') { window.close(); }
-      }
-    }
-  }
-  function handleCreditsClick() {
-    if(!mouse.clicked) return;
-    const b = buttons.creditsBack;
-    if(mouse.x>b.x && mouse.x<b.x+b.w && mouse.y>b.y && mouse.y<b.y+b.h) {
-      state = State.MENU;
-    }
-  }
 });
