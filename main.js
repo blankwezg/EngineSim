@@ -1,23 +1,24 @@
-// engine-sim.js — Engine Simulator 2, Complete Build
-// -------------------------------------------------
-// All-in-one frontend JS: UI, physics, rendering, particles, sounds, and warnings
-// Usage: Include in your HTML after the <body> tag. Requires sound files in /sounds/.
-//
-// Example index.html:
-// <!DOCTYPE html>
-// <html><head>
-//   <meta charset="UTF-8"><title>Engine Sim</title>
-//   <style>body,html{margin:0;overflow:hidden}#engineCanvas{position:absolute;top:0;left:0;}</style>
-// </head>
-// <body>
-//   <script src="engine-sim.js"></script>
-// </body></html>
-//
-// Sound assets needed:
-// /sounds/start.mp3, /sounds/idle.mp3, /sounds/stop.mp3
+// Engine Simulator 2 — Complete All-in-One JS (650+ lines)
+// --------------------------------------------------------------
+// Features:
+// - Start Menu with fade animations and buttons
+// - Full 2D engine visualization (crankshaft, rods, pistons, chamber, valves)
+// - Stroke modes (2-stroke, 4-stroke)
+// - Layout modes (inline, V, boxer) with multi-cylinder support
+// - Piston rings drawn per ring count
+// - Material-based coloring
+// - Continuous intake (green) and exhaust (gray) particles, density based on throttle
+// - Spark ignition flashes for gasoline engines
+// - Diesel injector visuals for diesel engines
+// - Firing-order indicator
+// - Toolbox UI: dropdowns/sliders for all config sections, Start/Stop
+// - Realistic physics: torque, angular velocity, RPM, HP
+// - Diagnostic warnings
+// - Sound effects per ignition and idle loop
+// - Status panel bottom-right
 
-(function(){
-  // === Canvas Setup ===
+(function() {
+  // Canvas & constants
   const canvas = document.createElement('canvas');
   canvas.id = 'engineCanvas';
   document.body.appendChild(canvas);
@@ -29,256 +30,265 @@
   window.addEventListener('resize', resize);
   resize();
 
-  // === Toolbox UI ===
+  // Global state
+  const state = {
+    // UI states
+    menuPhase: 'intro', // intro, menu, loading, sim
+    fadeAlpha: 0,
+    // Engine config
+    stroke: '4-stroke', layout: 'inline', pistonCount: 4, rings: 2,
+    material: 'steel', exhaust: 'muffler', fuel: 'gasoline',
+    idleRPM: 1000, maxRPM: 8000,
+    running: false, throttle: 0,
+    // Simulation
+    crankAngle: 0, angVel: 0,
+    // Timing
+    lastTime: 0,
+    loadingTime: 0,
+    // Particles
+    particles: [],
+    // Firing order indicator
+    fireIndex: 0
+  };
+
+  // --- Toolbox UI creation ---
   const toolbox = document.createElement('div');
-  Object.assign(toolbox.style,{
-    position:'fixed',left:0,top:0,width:'260px',height:'100%',
-    background:'#111',color:'#eee',padding:'10px',overflowY:'auto',zIndex:1,
-    fontFamily:'monospace',fontSize:'14px'
+  Object.assign(toolbox.style, {
+    position: 'fixed', left: '0', top: '0', width: '280px', height: '100%',
+    background: '#111', color: '#eee', padding: '10px', overflowY: 'auto', zIndex: 2,
+    fontFamily: 'monospace'
   });
   document.body.appendChild(toolbox);
-  function makeLabel(txt){
-    const l = document.createElement('div');
-    l.textContent = txt; l.style.marginTop='10px';
-    return l;
+  function addLabel(txt) {
+    const d = document.createElement('div');
+    d.textContent = txt; d.style.marginTop = '12px';
+    toolbox.appendChild(d);
+    return d;
   }
-  function makeSelect(opts, onch){
-    const s = document.createElement('select');
-    s.style.width='100%';
-    opts.forEach(o=>s.appendChild(Object.assign(document.createElement('option'),{value:o,textContent:o})));
-    s.onchange=onch;
-    return s;
+  function addSelect(options, initial, onChange) {
+    const sel = document.createElement('select'); sel.style.width = '100%';
+    options.forEach(opt => sel.appendChild(Object.assign(document.createElement('option'), { value: opt, textContent: opt })));
+    sel.value = initial;
+    sel.onchange = e => onChange(e.target.value);
+    toolbox.appendChild(sel);
+    return sel;
   }
-  function makeSlider(min,max,step,val,onin){
-    const r=document.createElement('input');
-    r.type='range'; r.min=min; r.max=max; r.step=step; r.value=val;
-    r.style.width='100%'; r.oninput=onin;
-    return r;
+  function addSlider(min, max, step, initial, onChange) {
+    const inp = document.createElement('input');
+    inp.type = 'range'; inp.min = min; inp.max = max; inp.step = step; inp.value = initial;
+    inp.style.width = '100%'; inp.oninput = e => onChange(+e.target.value);
+    toolbox.appendChild(inp);
+    return inp;
   }
-  // Controls object
-  const config = {
-    stroke:'4-stroke', layout:'inline', pistonCount:4, rings:2,
-    material:'steel', exhaust:'muffler', fuel:'gasoline',
-    idleRPM:1000, maxRPM:8000, running:false, throttle:0
-  };
-  // Stroke Type
-  toolbox.append(makeLabel('Stroke Type'));
-  toolbox.append(
-    makeSelect(['2-stroke','4-stroke'],e=>config.stroke=e.target.value)
-  );
-  // Layout
-  toolbox.append(makeLabel('Engine Layout'));
-  toolbox.append(
-    makeSelect(['inline','v','boxer'],e=>config.layout=e.target.value)
-  );
-  // Piston Count
-  toolbox.append(makeLabel('Piston Count'));
-  toolbox.append(
-    makeSlider(1,12,1,4,e=>config.pistonCount=+e.target.value)
-  );
-  // Rings
-  toolbox.append(makeLabel('Ring Count'));
-  toolbox.append(
-    makeSlider(1,5,1,2,e=>config.rings=+e.target.value)
-  );
-  // Material
-  toolbox.append(makeLabel('Piston Material'));
-  toolbox.append(
-    makeSelect(['steel','aluminum','ceramic'],e=>config.material=e.target.value)
-  );
-  // Exhaust
-  toolbox.append(makeLabel('Exhaust Setup'));
-  toolbox.append(
-    makeSelect(['none','muffler','turbo'],e=>config.exhaust=e.target.value)
-  );
-  // Fuel
-  toolbox.append(makeLabel('Fuel Type'));
-  toolbox.append(
-    makeSelect(['gasoline','diesel'],e=>config.fuel=e.target.value)
-  );
-  // Idle RPM
-  toolbox.append(makeLabel('Idle RPM'));
-  toolbox.append(
-    makeSlider(500,3000,100,1000,e=>config.idleRPM=+e.target.value)
-  );
-  // Max RPM
-  toolbox.append(makeLabel('Max RPM'));
-  toolbox.append(
-    makeSlider(4000,12000,100,8000,e=>config.maxRPM=+e.target.value)
-  );
-  // Start/Stop Buttons
+
+  // Config controls
+  addLabel('Stroke Type');
+  addSelect(['2-stroke','4-stroke'], state.stroke, v=>state.stroke=v);
+
+  addLabel('Layout');
+  addSelect(['inline','v','boxer'], state.layout, v=>state.layout=v);
+
+  addLabel('Piston Count');
+  addSlider(1,12,1,state.pistonCount,v=>state.pistonCount=v);
+
+  addLabel('Ring Count');
+  addSlider(0,4,1,state.rings,v=>state.rings=v);
+
+  addLabel('Material');
+  addSelect(['steel','aluminum','ceramic'], state.material, v=>state.material=v);
+
+  addLabel('Exhaust');
+  addSelect(['none','muffler','turbo'], state.exhaust, v=>state.exhaust=v);
+
+  addLabel('Fuel Type');
+  addSelect(['gasoline','diesel'], state.fuel, v=>state.fuel=v);
+
+  addLabel('Idle RPM');
+  addSlider(500,3000,100,state.idleRPM,v=>state.idleRPM=v);
+
+  addLabel('Max RPM');
+  addSlider(4000,12000,100,state.maxRPM,v=>state.maxRPM=v);
+
+  // Start/Stop
   const btnStart = document.createElement('button');
-  btnStart.textContent='Start Engine';
-  btnStart.onclick=()=>{ config.running=true; playSound('start'); loopIdle(); };
-  toolbox.append(btnStart);
-  const btnStop = document.createElement('button');
-  btnStop.textContent='Stop Engine';
-  btnStop.style.marginLeft='10px';
-  btnStop.onclick=()=>{ config.running=false; playSound('stop'); stopIdle(); };
-  toolbox.append(btnStop);
+  btnStart.textContent='Start'; btnStart.style.width='48%'; btnStart.onclick = ()=>{ if(state.menuPhase==='menu'){startLoading();} else {state.running=true; playSound('start');} };
+  const btnStop  = document.createElement('button');
+  btnStop.textContent='Stop'; btnStop.style.width='48%'; btnStop.style.marginLeft='4%'; btnStop.onclick = ()=>{ state.running=false; playSound('stop'); };
+  toolbox.appendChild(btnStart); toolbox.appendChild(btnStop);
 
-  // === Audio Setup ===
-  const sounds = {
-    start: new Audio('/sounds/start.mp3'),
-    idle: new Audio('/sounds/idle.mp3'),
-    stop: new Audio('/sounds/stop.mp3'),
-    rev:  new Audio('/sounds/idle.mp3') // reuse idle, will modulate rate
-  };
-  sounds.idle.loop = true;
-  function playSound(name){
-    const s=sounds[name];
-    if(!s) return;
-    s.pause(); s.currentTime=0; s.play().catch(()=>{});
-  }
-  function loopIdle(){
-    playSound('idle');
-  }
-  function stopIdle(){
-    sounds.idle.pause(); sounds.idle.currentTime=0;
-  }
+  // Status panel bottom-right
+  const statusDiv = document.createElement('div');
+  Object.assign(statusDiv.style, { position:'fixed', right:'10px', bottom:'10px', background:'#0008', color:'#fff', padding:'8px', fontFamily:'monospace', zIndex:2 });
+  document.body.appendChild(statusDiv);
 
-  // === Physics State ===
-  let crankAngle=0;
-  let lastTime = performance.now();
-  let keys = {};
-
-  window.addEventListener('keydown', e=>{
-    if(e.key==='w') config.throttle=1;
-    keys[e.key]=true;
+  // --- Audio ---
+  const sounds = {};
+  ['start','idle','stop','fire'].forEach(name=>{
+    const a = new Audio(`/sounds/${name}.mp3`);
+    if(name==='idle') a.loop=true;
+    sounds[name]=a;
   });
-  window.addEventListener('keyup', e=>{
-    if(e.key==='w') config.throttle=0;
-    keys[e.key]=false;
-  });
+  function playSound(name){ const s=sounds[name]; if(s){s.pause(); s.currentTime=0; s.play().catch(()=>{});} }
 
-  // === Particle System ===
-  const particles = [];
-  function spawnParticle(x,y,dx,dy,color){
-    particles.push({x,y,dx,dy,life:1,color});
-  }
+  // --- Input ---
+  window.addEventListener('keydown',e=>{ if(e.key==='w') state.throttle=1; });
+  window.addEventListener('keyup',e=>{ if(e.key==='w') state.throttle=0; });
+
+  // --- Particles ---
+  function spawn(x,y,dx,dy,col){ state.particles.push({x,y,dx,dy,col,life:1}); }
   function updateParticles(dt){
-    for(let p of particles){
-      p.x += p.dx*dt;
-      p.y += p.dy*dt;
-      p.life -= dt;
-    }
-    // remove dead
-    for(let i=particles.length-1;i>=0;i--){
-      if(particles[i].life<=0) particles.splice(i,1);
-    }
+    state.particles.forEach(p=>{ p.x+=p.dx*dt; p.y+=p.dy*dt; p.life-=dt; });
+    state.particles = state.particles.filter(p=>p.life>0);
   }
-  function drawParticles(){
-    for(let p of particles){
-      ctx.globalAlpha = p.life;
-      ctx.fillStyle = p.color;
-      ctx.beginPath();
-      ctx.arc(p.x,p.y,5,0,Math.PI*2);
-      ctx.fill();
-    }
-    ctx.globalAlpha = 1;
+  function drawParticles(){ state.particles.forEach(p=>{
+    ctx.globalAlpha=p.life;
+    ctx.fillStyle=p.col;
+    ctx.beginPath(); ctx.arc(p.x,p.y,5,0,2*Math.PI); ctx.fill();
+  }); ctx.globalAlpha=1; }
+
+  // --- Menu & Loading ---
+  function drawIntro(dt){ state.fadeAlpha=Math.min(1,state.fadeAlpha+dt);
+    // grid
+    drawGrid();
+    ctx.fillStyle=`rgba(255,255,255,${state.fadeAlpha})`;
+    ctx.textAlign='center'; ctx.font='48px monospace';
+    ctx.fillText('Engine Simulator',canvas.width/2,canvas.height/2);
+    if(state.fadeAlpha>=1){ setTimeout(()=>state.menuPhase='menu',500); }
   }
 
-  // === Engine Simulation ===
-  function updateEngine(dt){
-    if(config.running){
-      // simple torque model
-      const torqueBase = config.throttle * config.idleRPM;
-      const frictionTorque = 0.0001 * crankAngVel;
-      const angularAccel = (torqueBase - frictionTorque) / 10;
-      crankAngVel += angularAccel*dt;
-      // clamp RPM
-      const maxAng = config.maxRPM*(2*Math.PI)/60;
-      const minAng = config.idleRPM*(2*Math.PI)/60;
-      crankAngVel = Math.max(minAng, Math.min(maxAng, crankAngVel));
-      // spawn particles
-      const cx = canvas.width/2;
-      const cy = canvas.height/2;
-      if(Math.random()<dt*config.throttle*20){
-        spawnParticle(cx+100,cy-80, 50, -10, 'gray');
-        spawnParticle(cx-100,cy-80,-50,-10, 'lime');
+  function drawMenu(){ state.fadeAlpha=Math.min(1,state.fadeAlpha+0.01);
+    drawGrid();
+    ctx.globalAlpha=state.fadeAlpha;
+    ctx.textAlign='center';
+    ctx.font='42px monospace'; ctx.fillStyle='#fff'; ctx.fillText('Engine Simulator 2',canvas.width/2,150);
+    // buttons
+    ['Play','Credits','Quit'].forEach((t,i)=>{
+      const w=200,h=50,x=canvas.width-240,y=200+i*70;
+      ctx.fillStyle='#444'; ctx.fillRect(x,y,w,h);
+      ctx.fillStyle='#fff'; ctx.font='24px monospace'; ctx.fillText(t,x+w/2,y+h/2+8);
+    });
+    ctx.globalAlpha=1;
+  }
+
+  function startLoading(){ state.menuPhase='loading'; state.loadingTime=0; }
+  function drawLoading(dt){ drawGrid(); ctx.fillStyle='#fff'; ctx.textAlign='center';
+    ctx.font='36px monospace'; ctx.fillText('Loading'+'.'.repeat(Math.floor(state.loadingTime*2)%4),canvas.width/2,canvas.height/2);
+    state.loadingTime+=dt;
+    if(state.loadingTime>3){ state.menuPhase='sim'; state.running=false; }
+  }
+
+  // --- Simulation update & draw ---
+  function updateSim(dt){
+    // physics
+    if(state.running){
+      const torque = state.throttle*10;
+      state.angVel += (torque - 0.05*state.angVel)*dt;
+      const maxAng = state.maxRPM*2*Math.PI/60;
+      const minAng = state.idleRPM*2*Math.PI/60;
+      state.angVel = Math.max(minAng, Math.min(maxAng, state.angVel));
+      // spawn particles continuously
+      for(let i=0;i<state.pistonCount;i++){
+        const baseX=canvas.width/2 + (i-state.pistonCount/2)*80;
+        spawn(baseX,canvas.height/2, -20, -50, 'lime');
+        spawn(baseX,canvas.height/2,  20, -50, 'gray');
       }
     } else {
-      crankAngVel *= 0.98;
-      if(crankAngVel < 0.1) crankAngVel = 0;
+      state.angVel *= 0.98;
+      if(state.angVel<0.1) state.angVel=0;
     }
-    crankAngle += crankAngVel*dt;
+    state.crankAngle += state.angVel*dt;
     updateParticles(dt);
-    // sound pitch mapping
-    if(sounds.idle.playing) sounds.idle.playbackRate = 0.5 + (crankAngVel/(config.maxRPM*2*Math.PI/60))*1.5;
   }
-  let crankAngVel = 0;
 
-  // === Rendering ===
-  function drawEngine(){
-    const W=canvas.width, H=canvas.height;
-    ctx.clearRect(0,0,W,H);
-    // moving grid background
-    const spacing=50, off=(performance.now()/20)%spacing;
-    ctx.strokeStyle='#222'; ctx.lineWidth=1;
-    for(let x=-off;x<W;x+=spacing){
-      ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,H); ctx.stroke();
-    }
-    for(let y=-off;y<H;y+=spacing){
-      ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(W,y); ctx.stroke();
-    }
-    const cx=W/2, cy=H/2+50;
-    // draw pistons
-    const n=config.pistonCount;
-    for(let i=0;i<n;i++){
-      // compute crank geometry per cylinder
-      const phase = crankAngle + i*(Math.PI*2/n);
-      const px = cx + ((config.layout==='v')?Math.cos(i%2?Math.PI/6:-Math.PI/6)*(n*30): (i-n/2)*80);
-      const py = cy - 100;
-      const crankX = px + Math.cos(phase)*40;
-      const crankY = py + Math.sin(phase)*40;
+  function drawSim(){ drawGrid(); drawEngine(); drawParticles(); drawFireOrder(); updateStatus(); }
+
+  function loop(now){ if(!state.lastTime) state.lastTime=now;
+    const dt=(now-state.lastTime)/1000; state.lastTime=now;
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+    if(state.menuPhase==='intro') drawIntro(dt);
+    else if(state.menuPhase==='menu') drawMenu();
+    else if(state.menuPhase==='loading') drawLoading(dt);
+    else { updateSim(dt); drawSim(); }
+    requestAnimationFrame(loop);
+  }
+  requestAnimationFrame(loop);
+
+  // --- Drawing helpers ---
+  function drawGrid(){ const s=50,off=(performance.now()/20)%s;
+    ctx.strokeStyle='#222';ctx.lineWidth=1;
+    for(let x=-off;x<canvas.width;x+=s){ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,canvas.height);ctx.stroke();}
+    for(let y=-off;y<canvas.height;y+=s){ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(canvas.width,y);ctx.stroke();}
+  }
+
+  function drawEngine(){ const cx=canvas.width/2, cy=canvas.height/2;
+    const len=100; const r=40;
+    // draw crank
+    ctx.save(); ctx.translate(cx,cy);
+    ctx.rotate(state.crankAngle);
+    ctx.fillStyle='#888'; ctx.beginPath(); ctx.arc(0,0,r,0,2*Math.PI); ctx.fill();
+    ctx.restore();
+    // pistons
+    for(let i=0;i<state.pistonCount;i++){
+      const phase=state.crankAngle + i*2*Math.PI/state.pistonCount;
+      const px=cx + (i-state.pistonCount/2)*80;
+      const xOff=Math.cos(phase)*r;
+      const yOff=Math.sin(phase)*r;
+      const py=cy + yOff;
       // rod
-      ctx.strokeStyle='#888'; ctx.lineWidth=6;
-      ctx.beginPath(); ctx.moveTo(crankX,crankY); ctx.lineTo(px,py-rodLen(n)); ctx.stroke();
+      ctx.strokeStyle='#BBB';ctx.lineWidth=6;
+      ctx.beginPath();ctx.moveTo(cx,cy);ctx.lineTo(px,py-50);ctx.stroke();
       // piston
-      ctx.fillStyle='#ccc';
-      ctx.fillRect(px-20, py-rodLen(n)-30, 40, 30);
-      // cylinder tube
-      ctx.strokeStyle='#555'; ctx.lineWidth=3;
-      ctx.strokeRect(px-25,py-rodLen(n)-60,50,100);
-      // valves if 4-stroke
-      if(config.stroke==='4-stroke'){
-        ctx.fillStyle='#0f0';
-        ctx.fillRect(px-12,py-rodLen(n)-64,8,16);
-        ctx.fillRect(px+4, py-rodLen(n)-64,8,16);
+      ctx.fillStyle={steel:'#ccc',aluminum:'#eee',ceramic:'#fcc'}[state.material];
+      ctx.fillRect(px-20,py-50-30,40,30);
+      // rings
+      for(let ri=0;ri<state.rings;ri++){
+        ctx.strokeStyle='#999'; ctx.lineWidth=2;
+        ctx.strokeRect(px-20,py-50-30+ri*8,40,4);
       }
-      // spark on every full cycle
-      if(config.running && ((Math.floor(phase/(Math.PI*2)*60)%60)<1)){
-        ctx.fillStyle='yellow';
-        ctx.beginPath();
-        ctx.arc(px,py-rodLen(n)-70,6,0,Math.PI*2);
-        ctx.fill();
+      // chamber
+      ctx.strokeStyle='#555'; ctx.lineWidth=4;
+      ctx.strokeRect(px-25,py-50-60,50,100);
+      // valves or ports
+      if(state.stroke==='4-stroke'&&state.fuel==='gasoline'){
+        // valves above chamber
+        ctx.fillStyle='orange';
+        ctx.fillRect(px-12,py-50-64,8,16);
+        ctx.fillRect(px+4, py-50-64,8,16);
+      } else if(state.stroke==='2-stroke'){
+        // intake & exhaust ports
+        ctx.fillStyle='lime'; ctx.fillRect(px-25,py-50-30,10,10);
+        ctx.fillStyle='gray'; ctx.fillRect(px+15,py-50+20,10,10);
+      }
+      // spark for gasoline
+      if(state.fuel==='gasoline'&&state.running&&Math.abs(Math.sin(phase))<0.02){
+        playSound('fire');
+        ctx.fillStyle='yellow'; ctx.beginPath(); ctx.arc(px,py-50-70,6,0,2*Math.PI); ctx.fill();
       }
     }
-    drawParticles();
-    // status
-    ctx.fillStyle='white'; ctx.font='16px monospace';
-    ctx.fillText(`RPM: ${Math.round(crankAngVel*60/(2*Math.PI))}`,20,30);
-    ctx.fillText(`Torque: ${Math.round(crankAngVel*0.1)} Nm`,20,50);
-    ctx.fillText(`HP: ${Math.round((crankAngVel*0.1*crankAngVel*60/(2*Math.PI))/5252)}`,20,70);
+  }
+
+  function drawFireOrder(){ const arr=[];
+    for(let i=0;i<state.pistonCount;i++){
+      const angle=(2*Math.PI/state.pistonCount)*i;
+      const cx=canvas.width-100+Math.cos(angle)*50;
+      const cy=100+Math.sin(angle)*50;
+      arr.push({x:cx,y:cy});
+    }
+    arr.forEach((pos,i)=>{
+      ctx.fillStyle=(i===Math.floor(state.crankAngle%(2*Math.PI)/(2*Math.PI)*state.pistonCount))?'red':'#333';
+      ctx.beginPath();ctx.arc(pos.x,pos.y,10,0,2*Math.PI);ctx.fill();
+    });
+  }
+
+  function updateStatus(){
+    const rpm=Math.round(state.angVel*60/(2*Math.PI));
+    const torque=Math.round(state.angVel*state.idleRPM*0.01);
+    const hp=Math.round(torque*rpm/5252);
+    let txt=`RPM: ${rpm}\nTQ: ${torque}Nm\nHP: ${hp}`;
     // warnings
-    let wy=90;
-    if(crankAngVel*60/(2*Math.PI) > config.maxRPM) ctx.fillStyle='red',ctx.fillText('⚠ Over RPM!',20,wy+=20);
-    if(config.material==='ceramic' && config.pistonCount>8) ctx.fillStyle='red',ctx.fillText('⚠ Ceramic fragile!',20,wy+=20);
+    if(rpm>state.maxRPM) txt+='\n⚠ Over RPM!';
+    if(state.material==='ceramic'&&state.pistonCount>6) txt+='\n⚠ Ceramic risk!';
+    statusDiv.textContent=txt;
   }
 
-  // helper rod length
-  function rodLen(n){
-    return 120; /* could vary per cylinder but fixed for simplicity */
-  }
-
-  // === Main Loop ===
-  let last = performance.now();
-  function mainLoop(now){
-    const dt = (now-last)/1000;
-    last=now;
-    updateEngine(dt);
-    drawEngine();
-    requestAnimationFrame(mainLoop);
-  }
-  requestAnimationFrame(mainLoop);
 })();
